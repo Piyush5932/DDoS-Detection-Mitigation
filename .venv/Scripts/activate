@@ -41,12 +41,12 @@ case "$(uname)" in
     CYGWIN*|MSYS*|MINGW*)
         # transform D:\path\to\venv to /d/path/to/venv on MSYS and MINGW
         # and to /cygdrive/d/path/to/venv on Cygwin
-        VIRTUAL_ENV=$(cygpath 'D:\Airavat_Web\DDoS-Detection-Mitigation\.venv')
+        VIRTUAL_ENV=$(cygpath 'D:\MINI\DDoS-Detection-Mitigation\DDoS-Detection-Mitigation\.venv')
         export VIRTUAL_ENV
         ;;
     *)
         # use the path as-is
-        export VIRTUAL_ENV='D:\Airavat_Web\DDoS-Detection-Mitigation\.venv'
+        export VIRTUAL_ENV='D:\MINI\DDoS-Detection-Mitigation\DDoS-Detection-Mitigation\.venv'
         ;;
 esac
 

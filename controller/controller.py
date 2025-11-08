@@ -19,6 +19,7 @@ import sys
 # Import local modules directly
 from feature_extractor import FeatureExtractor
 from ml_model import DDoSDetector
+from packet_logger import PacketLogger
 
 class DDoSMitigation(app_manager.OSKenApp):
     """
@@ -33,14 +34,7 @@ class DDoSMitigation(app_manager.OSKenApp):
         self.monitor_thread = hub.spawn(self._monitor)
         self.feature_extractor = FeatureExtractor()
         
-        # Initialize ML model
-        model_path = '../models/rf_model.pkl'
-        if os.path.exists(model_path):
-            self.detector = DDoSDetector(model_path)
-        else:
-            self.detector = DDoSDetector()
-            # Generate sample dataset and train model if no model exists
-            self._train_model()
+        self.detector = DDoSDetector()
         
         # Dictionary to track blocked sources
         self.blocked_sources = {}
@@ -54,6 +48,9 @@ class DDoSMitigation(app_manager.OSKenApp):
         # Initialize destination-based detection for random source attacks
         self.dst_packet_counts = {}
         self.dst_last_time = {}
+        
+        # Initialize packet logger
+        self.packet_logger = PacketLogger()
         
         self.logger.info("DDoS Mitigation Controller Started")
     
@@ -124,7 +121,8 @@ class DDoSMitigation(app_manager.OSKenApp):
     @set_ev_cls(ofp_event.EventOFPPacketIn, MAIN_DISPATCHER)
     def _packet_in_handler(self, ev):
         """
-        Handle packet-in events
+       print("Packet in handler called!")
+        # Handle packet-in events
         """
         msg = ev.msg
         datapath = msg.datapath
@@ -157,9 +155,36 @@ class DDoSMitigation(app_manager.OSKenApp):
         src = eth.src
         dpid = datapath.id
         
+        # Prepare packet data for logging
+        pkt_data = {
+            'src_mac': src,
+            'dst_mac': dst,
+            'src_ip': ip_pkt.src,
+            'dst_ip': ip_pkt.dst,
+            'protocol': ip_pkt.proto,
+            'packet_size': len(msg.data),
+            'src_port': 'N/A',
+            'dst_port': 'N/A',
+            'flags': 'N/A'
+        }
+        
+        # Add protocol-specific information
+        if tcp_pkt:
+            pkt_data['src_port'] = tcp_pkt.src_port
+            pkt_data['dst_port'] = tcp_pkt.dst_port
+            pkt_data['flags'] = f"ACK:{tcp_pkt.ack},SYN:{tcp_pkt.syn},FIN:{tcp_pkt.fin},RST:{tcp_pkt.rst}"
+        elif udp_pkt:
+            pkt_data['src_port'] = udp_pkt.src_port
+            pkt_data['dst_port'] = udp_pkt.dst_port
+        elif icmp_pkt:
+            pkt_data['protocol'] = 'ICMP'
+            pkt_data['flags'] = f"Type:{icmp_pkt.type},Code:{icmp_pkt.code}"
+        
         # Check if source IP is already blocked
         if ip_pkt.src in self.blocked_sources:
             self.logger.info(f"Dropping packet from blocked source: {ip_pkt.src}")
+            # Log blocked packet
+            self.packet_logger.log_packet(pkt_data, status='blocked', reason=f"Source IP {ip_pkt.src} is blocked")
             return
         
         # Detect flood attacks based on packet rate
@@ -183,12 +208,18 @@ class DDoSMitigation(app_manager.OSKenApp):
                     
                     # Check if this is a flood attack
                     if packets_per_second > self.flood_threshold:
+                        # Log the attack detection
+                        self.packet_logger.log_packet(pkt_data, status='blocked', 
+                                                     reason=f"Flood attack detected: {packets_per_second} pps")
                         self._handle_attack_detection(datapath, ip_pkt, tcp_pkt, packets_per_second, current_time)
                         return
         else:
             # Initialize counters for new flow
             self.packet_counts[flow_key] = 1
             self.last_packet_time[flow_key] = current_time
+            
+            # Log normal packet
+            self.packet_logger.log_packet(pkt_data, status='normal')
         
         # SECOND DETECTION METHOD: Destination-based detection (for random source attacks)
         dst_key = (ip_pkt.dst, ip_pkt.proto)

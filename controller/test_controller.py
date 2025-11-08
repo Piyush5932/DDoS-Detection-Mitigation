@@ -8,6 +8,8 @@ import socket
 import sys
 from collections import deque, defaultdict
 
+from packet_logger import PacketLogger
+
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -21,6 +23,7 @@ class SimpleController:
         self.flood_threshold = 20  # allow up to 20 connections/sec
         self.detection_window = 5.0  # or increase to 5.0 seconds
         self.blocked_sources = {}
+        self.packet_logger = PacketLogger()
         
         logger.info("Simple DDoS Detection Controller Started")
     
@@ -68,11 +71,28 @@ class SimpleController:
         """Handle client connection and detect attacks"""
         source_ip = address[0]
         
+        # Log the packet
+        pkt_data = {
+            'src_mac': 'N/A',
+            'dst_mac': 'N/A',
+            'src_ip': source_ip,
+            'dst_ip': '127.0.0.1',
+            'protocol': 'TCP',
+            'packet_size': 0,
+            'src_port': address[1],
+            'dst_port': 6653,
+            'flags': 'N/A'
+        }
+        
         # Check if this source is already blocked
         if source_ip in self.blocked_sources:
+            self.packet_logger.log_packet(pkt_data, status='blocked', reason='Source IP is blocked')
             logger.info(f"Blocked connection attempt from {source_ip}")
             client_socket.close()
             return
+        else:
+            self.packet_logger.log_packet(pkt_data, status='normal')
+
         
         # Sliding window update and rate calc
         now = time.time()
