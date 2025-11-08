@@ -1,166 +1,77 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-
-import time
-import logging
-import threading
 import socket
-import sys
-from collections import deque, defaultdict
-
-from packet_logger import PacketLogger
-
-# Configure logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger(__name__)
+import time
+import threading
 
 class SimpleController:
-    def __init__(self):
-        # Sliding window per source of recent connection timestamps
-        self.connection_times = defaultdict(lambda: deque(maxlen=5000))
+    def __init__(self, host='127.0.0.1', port=6653):
+        self.host = host
+        self.port = port
+        self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self.connection_counts = {}
+        self.blocked_sources = set()
         self.lock = threading.Lock()
-        # Detection parameters
-        self.flood_threshold = 20  # allow up to 20 connections/sec
-        self.detection_window = 5.0  # or increase to 5.0 seconds
-        self.blocked_sources = {}
-        self.packet_logger = PacketLogger()
-        
-        logger.info("Simple DDoS Detection Controller Started")
-    
-    def start_server(self, host='127.0.0.1', port=6653):
-        """Start a simple server to listen for packets"""
-        self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        
+        self.running = False
+
+    def _handle_client(self, conn, addr):
+        print(f"Connection from {addr}")
+        ip_addr = addr[0]
+
+        with self.lock:
+            if ip_addr in self.blocked_sources:
+                print(f"Blocked connection attempt from {ip_addr}")
+                conn.close()
+                return
+
+            current_time = time.time()
+            if ip_addr not in self.connection_counts:
+                self.connection_counts[ip_addr] = []
+            
+            # Remove timestamps older than 1 second
+            self.connection_counts[ip_addr] = [t for t in self.connection_counts[ip_addr] if current_time - t <= 1]
+            self.connection_counts[ip_addr].append(current_time)
+            
+            rate = len(self.connection_counts[ip_addr])
+            
+            # Simple DDoS detection logic
+            if rate > 10: # More than 10 connections per second
+                print(f"ATTACK DETECTED: TCP Flood from {ip_addr} (Rate: {rate:.2f} pps)")
+                self.blocked_sources.add(ip_addr)
+                print(f"BLOCKING SOURCE: {ip_addr}")
+
         try:
-            self.server_socket.bind((host, port))
-            self.server_socket.listen(5)
-            logger.info(f"Controller listening on {host}:{port}")
-            
-            # Start a thread to accept connections
-            self.accept_thread = threading.Thread(target=self._accept_connections)
-            self.accept_thread.daemon = True
-            self.accept_thread.start()
-            
-            # Keep the main thread alive
+            while self.running:
+                data = conn.recv(1024)
+                if not data:
+                    break
+        except ConnectionResetError:
+            print(f"Connection reset by {addr}")
+        finally:
+            conn.close()
+
+    def start(self):
+        self.sock.bind((self.host, self.port))
+        self.sock.listen(5)
+        print(f"Controller listening on {self.host}:{self.port}")
+        self.running = True
+        
+        while self.running:
             try:
-                while True:
-                    time.sleep(1)
-            except KeyboardInterrupt:
-                logger.info("Controller shutting down...")
-                self.server_socket.close()
-                sys.exit(0)
-                
-        except Exception as e:
-            logger.error(f"Error starting controller: {e}")
-            sys.exit(1)
-    
-    def _accept_connections(self):
-        """Accept incoming connections"""
-        while True:
-            try:
-                client_socket, address = self.server_socket.accept()
-                client_thread = threading.Thread(target=self._handle_client, args=(client_socket, address))
+                conn, addr = self.sock.accept()
+                client_thread = threading.Thread(target=self._handle_client, args=(conn, addr))
                 client_thread.daemon = True
                 client_thread.start()
-            except Exception as e:
-                logger.error(f"Error accepting connection: {e}")
-                break
-    
-    def _handle_client(self, client_socket, address):
-        """Handle client connection and detect attacks"""
-        source_ip = address[0]
-        
-        # Log the packet
-        pkt_data = {
-            'src_mac': 'N/A',
-            'dst_mac': 'N/A',
-            'src_ip': source_ip,
-            'dst_ip': '127.0.0.1',
-            'protocol': 'TCP',
-            'packet_size': 0,
-            'src_port': address[1],
-            'dst_port': 6653,
-            'flags': 'N/A'
-        }
-        
-        # Check if this source is already blocked
-        if source_ip in self.blocked_sources:
-            self.packet_logger.log_packet(pkt_data, status='blocked', reason='Source IP is blocked')
-            logger.info(f"Blocked connection attempt from {source_ip}")
-            client_socket.close()
-            return
-        else:
-            self.packet_logger.log_packet(pkt_data, status='normal')
+            except OSError:
+                break # Socket closed
 
-        
-        # Sliding window update and rate calc
-        now = time.time()
-        with self.lock:
-            times = self.connection_times[source_ip]
-            times.append(now)
-            # Drop entries outside window
-            window_start = now - self.detection_window
-            while times and times[0] < window_start:
-                times.popleft()
-            # Rate = count/window
-            window_span = max(now - (times[0] if times else now), 1e-6)
-            rate = len(times) / window_span
+    def stop(self):
+        self.running = False
+        self.sock.close()
+        print("Controller stopped.")
 
-        # Detect attack type based on connection rate and packet size
-        attack_type = "TCP Flood"
-        protocol = "TCP"
-        try:
-            data = client_socket.recv(1024)
-            if data:
-                if len(data) > 512:
-                    attack_type = "UDP Flood"
-                    protocol = "UDP"
-                elif data.startswith(b'\x08'):  # crude ICMP echo check
-                    attack_type = "ICMP Flood"
-                    protocol = "ICMP"
-        except:
-            pass
-
-        if rate > self.flood_threshold:
-            self._handle_attack(source_ip, rate, attack_type)
-        
-        client_socket.close()
-    
-    def _handle_attack(self, source_ip, rate, attack_type="TCP Flood"):
-        """Handle detected attack"""
-        if source_ip not in self.blocked_sources:
-            # Determine protocol based on attack type
-            if "UDP" in attack_type.upper():
-                protocol = "UDP"
-            elif "ICMP" in attack_type.upper():
-                protocol = "ICMP"
-            else:
-                protocol = "TCP"
-
-            # Print prominent banner similar to README output
-            print("\n" + "="*60)
-            print("🚨 DDOS ATTACK DETECTED! 🚨")
-            print("="*60)
-            print("\nAttack Details:")
-            print(f"  Source IP:       {source_ip}")
-            print(f"  Destination IP:  127.0.0.1")  # Local test controller destination
-            print(f"  Protocol:        {protocol}")
-            print(f"  Attack Type:     {attack_type}")
-            print(f"  Confidence:      98.75%")
-            print(f"  Packets/sec:     {rate:.1f}")
-            print(f"  Bytes/sec:       {int(rate * 120)}")
-
-            logger.warning(f"ATTACK DETECTED: {attack_type} from {source_ip} (Rate: {rate:.2f} pps)")
-            logger.warning(f"BLOCKING SOURCE: {source_ip}")
-            
-            # Add to blocked sources
-            self.blocked_sources[source_ip] = time.time()
-            
-            print(f"\n✅ MITIGATION ACTION: Blocked source IP {source_ip}")
-            print("="*60)
-            # In a real controller, we would install flow rules to block this source
-
-if __name__ == "__main__":
+if __name__ == '__main__':
     controller = SimpleController()
-    controller.start_server()
+    try:
+        controller.start()
+    except KeyboardInterrupt:
+        controller.stop()

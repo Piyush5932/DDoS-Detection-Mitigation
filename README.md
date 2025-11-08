@@ -110,42 +110,37 @@ h1 hping3 -S -V -d 120 -w 64 -p 80 --rand-source --flood h2
 h1 hping3 -2 -V -d 120 -w 64 -p 80 --rand-source --flood h2
 ```
 
-### Windows Usage (Limited Functionality)
+### Windows Testing with `test_controller.py`
 
-1. Start the test controller for attack detection:
+Since Mininet is not available on Windows, a simplified test environment is provided using `test_controller.py` and `test_simulation.py`. This allows for testing the core DDoS detection and logging logic without a full network simulation.
+
+The `test_controller.py` script starts a simple TCP server that listens for incoming connections and uses the `SimpleController` class to detect attacks. The `test_simulation.py` script sends a variety of normal and attack traffic to the test controller.
+
+The `PacketLogger` is integrated into the `SimpleController` to log all incoming packets to `logs/packet_log.csv`.
+
+
+
+### Windows Usage
+
+1. Start the test controller:
 ```powershell
 cd controller
 python test_controller.py
 ```
-You should see output like:
-```
-INFO - Simple DDoS Detection Controller Started
-INFO - Controller listening on 127.0.0.1:6653
-```
 
-2. In a separate terminal, run the attack simulation:
+2. In a separate terminal, run the simulation:
 ```powershell
 cd controller
-python quick_attack_test.py
-```
-You should see output like:
-```
-Starting quick attack test...
-Starting TCP flood attack to 127.0.0.1:6653
-Sent 0 attack packets
-Sent 10 attack packets
-...
-Attack completed
+python test_simulation.py
 ```
 
-3. Check the test controller terminal for attack detection messages:
-```
-WARNING - ATTACK DETECTED: TCP Flood from 127.0.0.1 (Rate: 306.20 pps)
-WARNING - BLOCKING SOURCE: 127.0.0.1
-INFO - Blocked connection attempt from 127.0.0.1
+3. Check the `logs/packet_log.csv` file to verify that packets have been logged. You can use the `view_logs.py` script for this:
+```powershell
+cd controller
+python view_logs.py
 ```
 
-Note: If you don't see attack detection messages, try running the attack simulation again or increase the number of packets in quick_attack_test.py.
+4. The test controller will also print attack detection messages to the console.
 
 4. Monitoring attack detection:
 When an attack is detected, you'll see clear alerts in the controller terminal:
@@ -173,7 +168,8 @@ DDoS-Detection-Mitigation/
 ├── controller/
 │   ├── controller.py       # Main os-ken controller application
 │   ├── ml_model.py         # Machine learning model implementation
-│   └── feature_extractor.py # Traffic feature extraction
+│   ├── feature_extractor.py # Traffic feature extraction
+│   └── packet_logger.py      # Packet logging implementation
 ├── mininet/
 │   └── topology.py         # Network topology definition
 ├── dataset/

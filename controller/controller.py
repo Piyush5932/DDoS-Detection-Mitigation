@@ -121,7 +121,6 @@ class DDoSMitigation(app_manager.OSKenApp):
     @set_ev_cls(ofp_event.EventOFPPacketIn, MAIN_DISPATCHER)
     def _packet_in_handler(self, ev):
         """
-       print("Packet in handler called!")
         # Handle packet-in events
         """
         msg = ev.msg
